@@ -15,8 +15,6 @@ def log(msg):
 
 def refresh_access_token():
     global ACCESS_TOKEN, API_SERVER, REFRESH_TOKEN
-
-    # Reload the .env file to get the latest token before each run
     load_dotenv(override=True)
     REFRESH_TOKEN = os.getenv("QUESTRADE_REFRESH_TOKEN")
 
@@ -31,7 +29,6 @@ def refresh_access_token():
     }
 
     response = requests.post(url, headers=headers, data=data)
-
     if response.status_code != 200:
         raise Exception(f"Token refresh failed: {response.text}")
 
@@ -49,11 +46,8 @@ def refresh_access_token():
 
     log("Access token refreshed successfully.")
 
-
 def get_headers():
-    return {
-        "Authorization": f"Bearer {ACCESS_TOKEN}"
-    }
+    return {"Authorization": f"Bearer {ACCESS_TOKEN}"}
 
 def search_symbol(symbol):
     url = f"{API_SERVER}v1/symbols/search?prefix={symbol}"
@@ -63,46 +57,63 @@ def search_symbol(symbol):
         raise Exception("Symbol not found.")
     return data["symbols"][0]
 
-def get_option_chain(symbol_id):
-    url = f"{API_SERVER}v1/options/chain?underlyingId={symbol_id}"
+def get_expiries(symbol_id):
+    url = f"{API_SERVER}v1/symbols/{symbol_id}/options"
     response = requests.get(url, headers=get_headers())
-    return response.json()
+    data = response.json()
 
-def simulate_bull_call_spread(option_chain):
-    option_pairs = option_chain.get("optionPairs", [])
-    call_options = [o for o in option_pairs if o["optionRight"] == "Call"]
+    print("🟡 Full chain response:", data)
 
-    if not call_options:
-        log("No call options found.")
+    # Directly return the top-level option expiry dates
+    if "optionExpiryDates" in data:
+        expiries = sorted(data["optionExpiryDates"])
+        return expiries
+    else:
+        raise Exception("No optionExpiryDates found in response.")
+
+
+def get_option_quotes(symbol_id, expiry):
+    url = f"{API_SERVER}v1/options/quotes?underlyingId={symbol_id}&expiryDate={expiry}"
+    response = requests.get(url, headers=get_headers())
+    return response.json().get("optionQuotes", [])
+
+def simulate_bull_call_spread(quotes):
+    calls = [q for q in quotes if q["optionRight"] == "Call" and q["askPrice"] and q["bidPrice"]]
+    if not calls:
+        log("No valid call options found.")
         return
 
-    call_options = sorted(call_options, key=lambda x: x["strikePrice"])
-    mid_index = len(call_options) // 2
-    buy_leg = call_options[mid_index]
-    sell_leg = next((c for c in call_options[mid_index+1:] if c["strikePrice"] >= buy_leg["strikePrice"] + 2), None)
+    calls = sorted(calls, key=lambda x: x["strikePrice"])
+    mid_index = len(calls) // 2
+    buy_leg = calls[mid_index]
+    sell_leg = next((c for c in calls[mid_index+1:] if c["strikePrice"] >= buy_leg["strikePrice"] + 2), None)
 
     if not sell_leg:
-        log("No suitable higher strike found for spread.")
+        log("No suitable higher strike found.")
         return
 
-    # Fallback prices if bid/ask are missing
-    buy_price = buy_leg.get("askPrice") or buy_leg.get("lastTradePrice") or 0.00
-    sell_price = sell_leg.get("bidPrice") or sell_leg.get("lastTradePrice") or 0.00
-
-    net_debit = buy_price - sell_price
+    net_debit = buy_leg["askPrice"] - sell_leg["bidPrice"]
     max_profit = sell_leg["strikePrice"] - buy_leg["strikePrice"] - net_debit
 
     log(f"Bull Call Spread:")
-    log(f"  BUY {buy_leg['strikePrice']} Call @ {buy_price}")
-    log(f"  SELL {sell_leg['strikePrice']} Call @ {sell_price}")
+    log(f"  BUY {buy_leg['strikePrice']} Call @ {buy_leg['askPrice']}")
+    log(f"  SELL {sell_leg['strikePrice']} Call @ {sell_leg['bidPrice']}")
     log(f"  Net Debit: ${net_debit:.2f}, Max Profit: ${max_profit:.2f}")
 
 def main():
     refresh_access_token()
     symbol_data = search_symbol("QQQ")
-    log(f"Symbol: {symbol_data['symbol']} (ID: {symbol_data['symbolId']})")
-    option_chain = get_option_chain(symbol_data["symbolId"])
-    simulate_bull_call_spread(option_chain)
+    symbol_id = symbol_data["symbolId"]
+    log(f"Symbol: {symbol_data['symbol']} (ID: {symbol_id})")
+
+    expiries = get_expiries(symbol_id)
+    if not expiries:
+        raise Exception("No expiries found.")
+    nearest_expiry = expiries[0].split("T")[0]
+    log(f"Using nearest expiry: {nearest_expiry}")
+
+    option_quotes = get_option_quotes(symbol_id, nearest_expiry)
+    simulate_bull_call_spread(option_quotes)
 
 if __name__ == "__main__":
     main()
