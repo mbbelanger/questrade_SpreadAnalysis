@@ -17,6 +17,7 @@ class PositionTracker:
         self.api_server = questrade_utils.API_SERVER
         self.positions = []
         self.executions = []
+        self.balances = {}
 
     def fetch_positions(self):
         """
@@ -31,16 +32,40 @@ class PositionTracker:
             data = response.json()
 
             if response.status_code != 200:
-                log(f"❌ Error fetching positions: {data}")
+                log(f"[ERROR] Error fetching positions: {data}")
                 return []
 
             self.positions = data.get("positions", [])
-            log(f"📊 Loaded {len(self.positions)} position(s)")
+            log(f"[OK] Loaded {len(self.positions)} position(s)")
             return self.positions
 
         except Exception as e:
-            log(f"❌ Error fetching positions: {e}")
+            log(f"[ERROR] Error fetching positions: {e}")
             return []
+
+    def fetch_account_balances(self):
+        """
+        Fetch account balances including cash, buying power, and margin
+
+        Returns:
+            Dictionary with balance information
+        """
+        try:
+            url = f"{self.api_server}v1/accounts/{self.account_id}/balances"
+            response = requests.get(url, headers=get_headers(), timeout=10)
+            data = response.json()
+
+            if response.status_code != 200:
+                log(f"[ERROR] Error fetching balances: {data}")
+                return {}
+
+            self.balances = data.get("perCurrencyBalances", [])
+            log(f"[OK] Loaded account balances")
+            return self.balances
+
+        except Exception as e:
+            log(f"[ERROR] Error fetching balances: {e}")
+            return {}
 
     def fetch_executions(self, start_date=None, end_date=None):
         """
@@ -66,15 +91,15 @@ class PositionTracker:
             data = response.json()
 
             if response.status_code != 200:
-                log(f"❌ Error fetching executions: {data}")
+                log(f"[ERROR] Error fetching executions: {data}")
                 return []
 
             self.executions = data.get("executions", [])
-            log(f"📜 Loaded {len(self.executions)} execution(s)")
+            log(f"[OK] Loaded {len(self.executions)} execution(s)")
             return self.executions
 
         except Exception as e:
-            log(f"❌ Error fetching executions: {e}")
+            log(f"[ERROR] Error fetching executions: {e}")
             return []
 
     def calculate_position_pnl(self, position):
@@ -161,28 +186,54 @@ class PositionTracker:
         }
 
     def display_portfolio_summary(self):
-        """Display formatted portfolio summary"""
+        """Display formatted portfolio summary with account balances"""
         summary = self.get_portfolio_summary()
 
+        # Fetch balances if not already loaded
+        if not self.balances:
+            self.fetch_account_balances()
+
         log("\n" + "="*70)
-        log("📊 PORTFOLIO SUMMARY")
+        log("PORTFOLIO SUMMARY")
         log("="*70)
+
+        # Display account balances (CAD and USD separately)
+        if self.balances:
+            log("\nACCOUNT BALANCES:")
+            log("-"*70)
+            for balance in self.balances:
+                currency = balance.get("currency", "N/A")
+                cash = balance.get("cash", 0)
+                market_value = balance.get("marketValue", 0)
+                total_equity = balance.get("totalEquity", 0)
+                buying_power = balance.get("buyingPower", 0)
+                maintenance_excess = balance.get("maintenanceExcess", 0)
+
+                log(f"\n{currency} Account:")
+                log(f"  Cash:                ${cash:>12,.2f}")
+                log(f"  Market Value:        ${market_value:>12,.2f}")
+                log(f"  Total Equity:        ${total_equity:>12,.2f}")
+                log(f"  Buying Power:        ${buying_power:>12,.2f}")
+                log(f"  Maintenance Excess:  ${maintenance_excess:>12,.2f}")
+            log("-"*70)
+
+        log(f"\nPOSITIONS:")
         log(f"Total Positions: {summary['total_positions']} "
             f"(Options: {summary['option_positions']}, Stocks: {summary['stock_positions']})")
         log(f"Total Market Value: ${summary['total_market_value']:,.2f}")
         log(f"Total Cost Basis: ${summary['total_cost']:,.2f}")
 
-        pnl_color = "🟢" if summary['total_unrealized_pnl'] >= 0 else "🔴"
-        log(f"Unrealized P&L: {pnl_color} ${summary['total_unrealized_pnl']:,.2f} "
+        pnl_indicator = "[+]" if summary['total_unrealized_pnl'] >= 0 else "[-]"
+        log(f"Unrealized P&L: {pnl_indicator} ${summary['total_unrealized_pnl']:,.2f} "
             f"({summary['total_pnl_percent']:+.2f}%)")
         log("="*70)
 
         # Display option positions
         if summary['option_details']:
-            log("\n📈 OPTION POSITIONS:")
+            log("\nOPTION POSITIONS:")
             log("-"*70)
             for pos in summary['option_details']:
-                pnl_indicator = "🟢" if pos['unrealized_pnl'] >= 0 else "🔴"
+                pnl_indicator = "[+]" if pos['unrealized_pnl'] >= 0 else "[-]"
                 log(f"{pos['symbol']:20s} | Qty: {pos['open_quantity']:>4} | "
                     f"Entry: ${pos['average_entry_price']:>7.2f} | "
                     f"Current: ${pos['current_price']:>7.2f} | "
@@ -191,10 +242,10 @@ class PositionTracker:
 
         # Display stock positions
         if summary['stock_details']:
-            log("\n📊 STOCK POSITIONS:")
+            log("\nSTOCK POSITIONS:")
             log("-"*70)
             for pos in summary['stock_details']:
-                pnl_indicator = "🟢" if pos['unrealized_pnl'] >= 0 else "🔴"
+                pnl_indicator = "[+]" if pos['unrealized_pnl'] >= 0 else "[-]"
                 log(f"{pos['symbol']:20s} | Qty: {pos['open_quantity']:>4} | "
                     f"Entry: ${pos['average_entry_price']:>7.2f} | "
                     f"Current: ${pos['current_price']:>7.2f} | "
