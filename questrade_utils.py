@@ -49,9 +49,9 @@ def refresh_access_token():
     if new_refresh_token:
         with open(".env", "w") as f:
             f.write(f"QUESTRADE_REFRESH_TOKEN={new_refresh_token}\n")
-        log("✅ Saved new refresh token to .env")
+        log("[OK] Saved new refresh token to .env")
     else:
-        log("⚠️ No new refresh token returned by Questrade")
+        log("[WARNING] No new refresh token returned by Questrade")
 
     log("Access token refreshed successfully.")
     return ACCESS_TOKEN, API_SERVER

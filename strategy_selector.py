@@ -78,11 +78,13 @@ def calculate_iv_rank(symbol_id, symbol_str):
 
         for i in range(0, len(all_option_ids), chunk_size):
             chunk_ids = all_option_ids[i:i+chunk_size]
-            greeks_url = f"{questrade_utils.API_SERVER}v1/markets/options/greeks?optionIds={','.join(chunk_ids)}"
+            greeks_url = f"{questrade_utils.API_SERVER}v1/markets/quotes/options"
 
             try:
-                greeks_resp = requests.get(greeks_url, headers=get_headers(), timeout=10).json()
-                greeks = greeks_resp.get("optionGreeks", [])
+                # Correct endpoint uses POST with optionIds in body
+                payload = {"optionIds": [int(id) for id in chunk_ids]}
+                greeks_resp = requests.post(greeks_url, json=payload, headers=get_headers(), timeout=10).json()
+                greeks = greeks_resp.get("optionQuotes", [])
 
                 # Collect IV values
                 for g in greeks:
@@ -90,7 +92,7 @@ def calculate_iv_rank(symbol_id, symbol_str):
                     if iv and iv > 0:  # Ensure positive IV
                         all_ivs.append(iv)
             except Exception as chunk_error:
-                log(f"⚠️ Error fetching Greeks chunk: {chunk_error}")
+                log(f"[WARNING] Error fetching Greeks chunk: {chunk_error}")
                 continue
 
         if len(all_ivs) < 5:
@@ -113,7 +115,7 @@ def calculate_iv_rank(symbol_id, symbol_str):
         return round(max(0, min(1, iv_rank)), 2)
 
     except Exception as e:
-        log(f"⚠️ IV rank calculation failed for {symbol_str}: {e}")
+        log(f"[WARNING] IV rank calculation failed for {symbol_str}: {e}")
         return 0.55  # fallback IV rank
 
 
@@ -156,16 +158,16 @@ def main():
         cleanup_temp_files(max_age_hours=24)
 
     refresh_access_token()
-    log(f"🔍 API_SERVER = {questrade_utils.API_SERVER}")
+    log(f"API_SERVER = {questrade_utils.API_SERVER}")
 
     with open(config.WATCHLIST_FILE) as f:
         tickers = [line.strip().upper() for line in f if line.strip()]
 
     if not tickers:
-        log(f"⚠️ WARNING: No tickers found in {config.WATCHLIST_FILE}")
+        log(f"[WARNING] No tickers found in {config.WATCHLIST_FILE}")
         return
 
-    log(f"📋 Processing {len(tickers)} ticker(s): {', '.join(tickers)}")
+    log(f"Processing {len(tickers)} ticker(s): {', '.join(tickers)}")
 
     output_file = config.STRATEGY_OUTPUT_FILE
     with open(output_file, "w", newline="") as csvfile:
