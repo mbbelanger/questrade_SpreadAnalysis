@@ -45,7 +45,7 @@ def get_expiries(symbol_id, retries=2):
         if expiries:
             return sorted(expiries)
 
-        log(f"⚠️ No expiry dates in option chain for {symbol_id} on attempt {attempt + 1}")
+        log(f"[WARNING] No expiry dates in option chain for {symbol_id} on attempt {attempt + 1}")
         sleep(1)
 
     return []
@@ -86,11 +86,12 @@ def get_option_quotes(symbol_id: int, expiry: str, window: int = 5):
 
     # 4) fetch quotes in chunks, request greeks
     all_quotes = []
-    for id_chunk in chunk(ids, 80):         # 80 keeps URL well below 2 KB
-        qurl = (f"{questrade_utils.API_SERVER}v1/markets/quotes?"
-                f"ids={','.join(id_chunk)}&fields=all,greeks")
-        qdata = requests.get(qurl, headers=get_headers(), timeout=10).json()
-        all_quotes.extend(qdata.get("quotes", []))
+    for id_chunk in chunk(ids, 80):
+        # Use correct POST endpoint for option quotes with Greeks
+        qurl = f"{questrade_utils.API_SERVER}v1/markets/quotes/options"
+        payload = {"optionIds": [int(id) for id in id_chunk]}
+        qdata = requests.post(qurl, json=payload, headers=get_headers(), timeout=10).json()
+        all_quotes.extend(qdata.get("optionQuotes", []))
 
     # DEBUG: keep only 1 tiny file
     with open(f"temp-quotes-{symbol_id}-{expiry}.json", "w") as f:
@@ -143,7 +144,7 @@ def process_strategy_file():
     import os
 
     if not os.path.exists(STRATEGY_FILE):
-        log(f"❌ ERROR: Strategy file '{STRATEGY_FILE}' not found!")
+        log(f"[ERROR] Strategy file '{STRATEGY_FILE}' not found!")
         log(f"   Please run strategy_selector.py first to generate strategies.")
         return
 
@@ -152,10 +153,10 @@ def process_strategy_file():
         rows = list(reader)
 
     if not rows:
-        log(f"⚠️ WARNING: No strategies found in {STRATEGY_FILE}")
+        log(f"[WARNING] No strategies found in {STRATEGY_FILE}")
         return
 
-    log(f"📊 Processing {len(rows)} strategy recommendation(s)")
+    log(f"Processing {len(rows)} strategy recommendation(s)")
 
     # Open CSV file for writing trade recommendations
     output_file = config.TRADE_OUTPUT_FILE
@@ -575,7 +576,7 @@ def process_strategy_file():
             except Exception as e:
                 log(f"{symbol}: Error processing strategy - {e}")
 
-    log(f"✅ Trade recommendations saved to {output_file}")
+    log(f"[OK] Trade recommendations saved to {output_file}")
 
 
 def main():
@@ -586,7 +587,7 @@ def main():
         cleanup_temp_files(max_age_hours=24)
 
     refresh_access_token()
-    log(f"🔍 API_SERVER = {questrade_utils.API_SERVER}")
+    log(f"API_SERVER = {questrade_utils.API_SERVER}")
     process_strategy_file()
 
 
