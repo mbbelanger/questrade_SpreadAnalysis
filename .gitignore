@@ -5,3 +5,11 @@ __pycache__/
 strategy_output_latest.csv
 watchlist.txt
 temp-*.json
+
+# Trading data files (user-specific)
+trade_recommendations.csv
+portfolio_*.csv
+execution_log_*.csv
+
+# Log files
+*.log
