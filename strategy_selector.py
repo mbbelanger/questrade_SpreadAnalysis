@@ -1,107 +1,119 @@
 import requests
 import csv
-import json
 from datetime import datetime
 from trend_analysis import detect_market_trend
 from questrade_utils import (
-    log, refresh_access_token, get_headers, search_symbol,
-    is_valid_quote, ACCESS_TOKEN, API_SERVER
+    log, refresh_access_token, get_headers, search_symbol
 )
 import questrade_utils
 import config
-    
+
 def calculate_iv_rank(symbol_id, symbol_str):
     """
-    Return a float 0–1 representing IV rank using ATM options.
-    Falls back to 0.55 if no valid options with IV are found.
-    Only considers the 6 strikes closest to ATM.
+    Calculate IV rank by sampling multiple strikes and expiries.
+
+    IV Rank = (Current IV - Min IV) / (Max IV - Min IV)
+
+    This improved version:
+    - Samples multiple expiries (not just nearest)
+    - Collects IV from multiple strikes across the chain
+    - Uses the range of sampled IVs as proxy for historical range
+
+    NOTE: True IV rank requires historical IV data (52-week percentile).
+    This implementation uses cross-sectional IV data (multiple strikes/expiries)
+    as a proxy. For production use, consider storing daily IV readings.
+
+    Returns: float 0-1 representing IV rank (0=lowest, 1=highest)
+    Falls back to 0.55 if insufficient data
     """
     try:
         # 1. Fetch the full option chain
         chain_url = f"{questrade_utils.API_SERVER}v1/symbols/{symbol_id}/options"
-        chain = requests.get(chain_url, headers=get_headers()).json()
-        root = chain["optionChain"][0]["chainPerRoot"][0]
-        strikes = root["chainPerStrikePrice"]
-        if not strikes:
-            raise Exception("Empty strike list")
+        chain_resp = requests.get(chain_url, headers=get_headers()).json()
 
-        # 2. Fetch underlying price (for ATM proximity)
+        # 2. Fetch underlying price
         underlying_q = requests.get(
             f"{questrade_utils.API_SERVER}v1/markets/quotes/{symbol_id}", headers=get_headers()
         ).json()["quotes"][0]
         underlying_px = underlying_q.get("lastTradePrice") or underlying_q.get("price")
 
-        # 3. Sort strikes by closeness to ATM
-        strikes_sorted = sorted(strikes, key=lambda s: abs(s["strikePrice"] - underlying_px))
+        if not underlying_px:
+            raise Exception("No underlying price available")
 
-        # 4. Try the 6 closest strikes to find valid quotes with IV
-        for s in strikes_sorted[:6]:
-            call_id = s.get("callSymbolId") or s.get("call", {}).get("symbolId")
-            put_id  = s.get("putSymbolId")  or s.get("put",  {}).get("symbolId")
-            ids = [str(i) for i in (call_id, put_id) if i]
-            if not ids:
+        # 3. Collect all option IDs across multiple expiries
+        all_option_ids = []
+        option_chain = chain_resp.get("optionChain", [])
+
+        for chain_entry in option_chain:
+            expiry = chain_entry.get("expiryDate", "").split("T")[0]
+            if not expiry:
                 continue
 
-            # 5. Fetch Quotes
-            quote_url = f"{questrade_utils.API_SERVER}v1/markets/quotes?ids={','.join(ids)}"
-            quotes_resp = requests.get(quote_url, headers=get_headers()).json()
-            quotes = quotes_resp.get("quotes", [])
-            if not quotes:
-                log(f"❌ 'quotes' key missing in response from: {quote_url}")
+            chain_roots = chain_entry.get("chainPerRoot", [])
+            for root in chain_roots:
+                strikes = root.get("chainPerStrikePrice", [])
+
+                # Sort by distance from ATM
+                strikes_sorted = sorted(strikes, key=lambda s: abs(s.get("strikePrice", 0) - underlying_px))
+
+                # Take closest 10 strikes to ATM for this expiry
+                for strike in strikes_sorted[:10]:
+                    call_id = strike.get("callSymbolId") or strike.get("call", {}).get("symbolId")
+                    put_id = strike.get("putSymbolId") or strike.get("put", {}).get("symbolId")
+
+                    if call_id:
+                        all_option_ids.append(str(call_id))
+                    if put_id:
+                        all_option_ids.append(str(put_id))
+
+        if not all_option_ids:
+            raise Exception("No option IDs found in chain")
+
+        # Limit to first 100 options to avoid overwhelming the API
+        all_option_ids = list(dict.fromkeys(all_option_ids))[:100]
+
+        # 4. Fetch Greeks in chunks
+        all_ivs = []
+        chunk_size = 50  # Conservative chunk size for Greeks endpoint
+
+        for i in range(0, len(all_option_ids), chunk_size):
+            chunk_ids = all_option_ids[i:i+chunk_size]
+            greeks_url = f"{questrade_utils.API_SERVER}v1/markets/options/greeks?optionIds={','.join(chunk_ids)}"
+
+            try:
+                greeks_resp = requests.get(greeks_url, headers=get_headers(), timeout=10).json()
+                greeks = greeks_resp.get("optionGreeks", [])
+
+                # Collect IV values
+                for g in greeks:
+                    iv = g.get("volatility")
+                    if iv and iv > 0:  # Ensure positive IV
+                        all_ivs.append(iv)
+            except Exception as chunk_error:
+                log(f"⚠️ Error fetching Greeks chunk: {chunk_error}")
                 continue
 
-            with open(f"temp-{symbol_str.upper()}-{s['strikePrice']}-quotes.json", "w") as f:
-                json.dump(quotes, f, indent=2)
+        if len(all_ivs) < 5:
+            raise Exception(f"Insufficient IV data (only {len(all_ivs)} values)")
 
-            # 6. Fetch Greeks
-            greeks_url = f"{questrade_utils.API_SERVER}v1/markets/options/greeks?optionIds={','.join(ids)}"
-            greeks_resp = requests.get(greeks_url, headers=get_headers()).json()
-            greeks = greeks_resp.get("optionGreeks", [])
-            # Instead of raising an exception, fallback to volume-based IV estimate
-            if not greeks:
-                log(f"❌ No greeks returned from: {greeks_url}")
-                # TEMP fallback: estimate IV rank using quote volume and price only
-                ivs = []
-                for q in quotes:
-                    if is_valid_quote(q) and q.get("volume"):
-                        # Estimate IV proxy using normalized bid/ask (just a crude proxy)
-                        spread = q.get("askPrice", 0) - q.get("bidPrice", 0)
-                        mid = (q.get("askPrice", 0) + q.get("bidPrice", 0)) / 2
-                        if mid > 0 and spread / mid < 0.5:  # Tight spread
-                            ivs.append(spread / mid)
+        # 5. Calculate IV rank using collected data
+        current_iv = sum(all_ivs[:10]) / min(10, len(all_ivs))  # Use average of first 10 (nearest ATM)
+        min_iv = min(all_ivs)
+        max_iv = max(all_ivs)
 
-                if ivs:
-                    iv_proxy = sum(ivs) / len(ivs)
-                    iv_rank = (iv_proxy - 0.1) / (0.3 - 0.1)
-                    return round(max(0, min(1, iv_rank)), 2)
+        # Calculate IV rank
+        if max_iv > min_iv:
+            iv_rank = (current_iv - min_iv) / (max_iv - min_iv)
+        else:
+            iv_rank = 0.5  # If no range, assume mid-rank
 
-                continue
+        # Log the calculation for transparency
+        log(f"{symbol_str}: Current IV={current_iv:.3f}, Range=[{min_iv:.3f}, {max_iv:.3f}], Rank={iv_rank:.2f} (from {len(all_ivs)} samples)")
 
-
-            with open(f"temp-{symbol_str.upper()}-{s['strikePrice']}-greeks.json", "w") as f:
-                json.dump(greeks, f, indent=2)
-
-            greeks_by_id = {g["optionId"]: g for g in greeks}
-
-            # 7. Match valid quotes to Greeks and extract volatility
-            ivs = []
-            for q in quotes:
-                if not is_valid_quote(q):
-                    continue
-                g = greeks_by_id.get(q["symbolId"])
-                if g and g.get("volatility"):
-                    ivs.append(g["volatility"])
-
-            if ivs:
-                current_iv = sum(ivs) / len(ivs)
-                iv_low, iv_high = current_iv * 0.5, current_iv * 1.5
-                iv_rank = (current_iv - iv_low) / (iv_high - iv_low)
-                return round(max(0, min(1, iv_rank)), 2)
-
-        raise Exception("No valid options with IV found in nearest strikes")
+        return round(max(0, min(1, iv_rank)), 2)
 
     except Exception as e:
-        log(f"⚠️ IV fetch failed for {symbol_str}: {e}")
+        log(f"⚠️ IV rank calculation failed for {symbol_str}: {e}")
         return 0.55  # fallback IV rank
 
 
