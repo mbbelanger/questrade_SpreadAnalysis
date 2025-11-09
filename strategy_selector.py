@@ -165,7 +165,12 @@ def main():
     log(f"API_SERVER = {questrade_utils.API_SERVER}")
 
     with open(config.WATCHLIST_FILE) as f:
-        tickers = [line.strip().upper() for line in f if line.strip()]
+        # Filter out empty lines and comments (lines starting with #)
+        tickers = [
+            line.strip().upper()
+            for line in f
+            if line.strip() and not line.strip().startswith('#')
+        ]
 
     if not tickers:
         log(f"[WARNING] No tickers found in {config.WATCHLIST_FILE}")
