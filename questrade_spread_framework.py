@@ -1,64 +1,12 @@
 
-import os
 import requests
-from datetime import datetime
-from dotenv import load_dotenv
-
-load_dotenv()
-REFRESH_TOKEN = os.getenv("QUESTRADE_REFRESH_TOKEN")
-BASE_URL = "https://login.questrade.com"
-ACCESS_TOKEN = None
-API_SERVER = None
-
-def log(msg):
-    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}")
-
-def refresh_access_token():
-    global ACCESS_TOKEN, API_SERVER, REFRESH_TOKEN
-    load_dotenv(override=True)
-    REFRESH_TOKEN = os.getenv("QUESTRADE_REFRESH_TOKEN")
-
-    if not REFRESH_TOKEN:
-        raise Exception("Refresh token not found in .env file")
-
-    url = f"{BASE_URL}/oauth2/token"
-    headers = {"Content-Type": "application/x-www-form-urlencoded"}
-    data = {
-        "grant_type": "refresh_token",
-        "refresh_token": REFRESH_TOKEN
-    }
-
-    response = requests.post(url, headers=headers, data=data)
-    if response.status_code != 200:
-        raise Exception(f"Token refresh failed: {response.text}")
-
-    data = response.json()
-    ACCESS_TOKEN = data["access_token"]
-    API_SERVER = data["api_server"]
-    new_refresh_token = data.get("refresh_token")
-
-    if new_refresh_token:
-        with open(".env", "w") as f:
-            f.write(f"QUESTRADE_REFRESH_TOKEN={new_refresh_token}\n")
-        log("✅ Saved new refresh token to .env")
-    else:
-        log("⚠️ No new refresh token returned by Questrade")
-
-    log("Access token refreshed successfully.")
-
-def get_headers():
-    return {"Authorization": f"Bearer {ACCESS_TOKEN}"}
-
-def search_symbol(symbol):
-    url = f"{API_SERVER}v1/symbols/search?prefix={symbol}"
-    response = requests.get(url, headers=get_headers())
-    data = response.json()
-    if not data["symbols"]:
-        raise Exception("Symbol not found.")
-    return data["symbols"][0]
+from questrade_utils import (
+    log, refresh_access_token, get_headers, search_symbol
+)
+import questrade_utils
 
 def get_expiries(symbol_id):
-    url = f"{API_SERVER}v1/symbols/{symbol_id}/options"
+    url = f"{questrade_utils.API_SERVER}v1/symbols/{symbol_id}/options"
     response = requests.get(url, headers=get_headers())
     data = response.json()
 
@@ -82,7 +30,7 @@ def get_expiries(symbol_id):
         raise Exception(f"Failed to extract expiries: {e}")
 
 def get_option_quotes(symbol_id, expiry):
-    url = f"{API_SERVER}v1/options/quotes?underlyingId={symbol_id}&expiryDate={expiry}"
+    url = f"{questrade_utils.API_SERVER}v1/options/quotes?underlyingId={symbol_id}&expiryDate={expiry}"
     response = requests.get(url, headers=get_headers())
     return response.json().get("optionQuotes", [])
 
