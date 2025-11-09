@@ -143,12 +143,17 @@ def select_strategy(trend: str, iv_rank: float) -> str:
 
 def main():
     import os
+    from cleanup_utils import cleanup_temp_files
 
     # Validate watchlist file exists
     if not os.path.exists(config.WATCHLIST_FILE):
         log(f"❌ ERROR: Watchlist file '{config.WATCHLIST_FILE}' not found!")
         log(f"   Please create {config.WATCHLIST_FILE} with one ticker per line.")
         return
+
+    # Clean up old temp files before starting
+    if config.CLEANUP_TEMP_FILES:
+        cleanup_temp_files(max_age_hours=24)
 
     refresh_access_token()
     log(f"🔍 API_SERVER = {questrade_utils.API_SERVER}")

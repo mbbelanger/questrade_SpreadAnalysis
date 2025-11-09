@@ -579,6 +579,12 @@ def process_strategy_file():
 
 
 def main():
+    from cleanup_utils import cleanup_temp_files
+
+    # Clean up old temp files before starting
+    if config.CLEANUP_TEMP_FILES:
+        cleanup_temp_files(max_age_hours=24)
+
     refresh_access_token()
     log(f"🔍 API_SERVER = {questrade_utils.API_SERVER}")
     process_strategy_file()
