@@ -1,0 +1,33 @@
+# Watchlist for Options Trading
+# Lines starting with # are comments and will be ignored
+# Add one ticker symbol per line
+# You can organize tickers into sections with comment headers
+
+# ===== TECH STOCKS =====
+QQQ
+AAPL
+NVDA
+AMD
+TSLA
+
+# ===== ETFS =====
+SPY
+IWM
+# DIA  <- Example: commented out ticker
+
+# ===== INDIVIDUAL STOCKS =====
+AMZN
+MSFT
+GOOGL
+META
+
+# ===== CANADIAN STOCKS =====
+# CM
+# TD
+# RY
+
+# ===== NOTES =====
+# - Tickers are processed in the order listed
+# - Processing takes ~3-4 seconds per ticker
+# - Empty lines are ignored
+# - Case doesn't matter (converted to uppercase)
