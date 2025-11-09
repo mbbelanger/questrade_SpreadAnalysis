@@ -28,12 +28,14 @@ def calculate_iv_rank(symbol_id, symbol_str):
     """
     try:
         # 1. Fetch the full option chain
+        log(f"{symbol_str}: Fetching option chain...")
         chain_url = f"{questrade_utils.API_SERVER}v1/symbols/{symbol_id}/options"
-        chain_resp = requests.get(chain_url, headers=get_headers()).json()
+        chain_resp = requests.get(chain_url, headers=get_headers(), timeout=10).json()
 
         # 2. Fetch underlying price
+        log(f"{symbol_str}: Fetching underlying price...")
         underlying_q = requests.get(
-            f"{questrade_utils.API_SERVER}v1/markets/quotes/{symbol_id}", headers=get_headers()
+            f"{questrade_utils.API_SERVER}v1/markets/quotes/{symbol_id}", headers=get_headers(), timeout=10
         ).json()["quotes"][0]
         underlying_px = underlying_q.get("lastTradePrice") or underlying_q.get("price")
 
@@ -71,6 +73,7 @@ def calculate_iv_rank(symbol_id, symbol_str):
 
         # Limit to first 100 options to avoid overwhelming the API
         all_option_ids = list(dict.fromkeys(all_option_ids))[:100]
+        log(f"{symbol_str}: Collected {len(all_option_ids)} option IDs, fetching Greeks...")
 
         # 4. Fetch Greeks in chunks
         all_ivs = []
@@ -82,8 +85,9 @@ def calculate_iv_rank(symbol_id, symbol_str):
 
             try:
                 # Correct endpoint uses POST with optionIds in body
+                log(f"{symbol_str}: Fetching Greeks chunk {i//chunk_size + 1}/{(len(all_option_ids)-1)//chunk_size + 1}...")
                 payload = {"optionIds": [int(id) for id in chunk_ids]}
-                greeks_resp = requests.post(greeks_url, json=payload, headers=get_headers(), timeout=10).json()
+                greeks_resp = requests.post(greeks_url, json=payload, headers=get_headers(), timeout=15).json()
                 greeks = greeks_resp.get("optionQuotes", [])
 
                 # Collect IV values
