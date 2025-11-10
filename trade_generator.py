@@ -56,7 +56,7 @@ def get_option_quotes(symbol_id: int, expiry: str, window: int = 5):
     """
     # 1) full chain for the symbol
     url = f"{questrade_utils.API_SERVER}v1/symbols/{symbol_id}/options"
-    chain = requests.get(url, headers=get_headers(), timeout=10).json()
+    chain = requests.get(url, headers=get_headers(), timeout=30).json()
 
     # 2) underlying last price
     last_px = get_last_price(symbol_id)
@@ -90,8 +90,14 @@ def get_option_quotes(symbol_id: int, expiry: str, window: int = 5):
         # Use correct POST endpoint for option quotes with Greeks
         qurl = f"{questrade_utils.API_SERVER}v1/markets/quotes/options"
         payload = {"optionIds": [int(id) for id in id_chunk]}
-        qdata = requests.post(qurl, json=payload, headers=get_headers(), timeout=10).json()
+        qdata = requests.post(qurl, json=payload, headers=get_headers(), timeout=30).json()
         all_quotes.extend(qdata.get("optionQuotes", []))
+
+    # 5) Add strikePrice field extracted from symbol name
+    for quote in all_quotes:
+        strike = get_strike_from_symbol(quote.get("symbol", ""))
+        if strike is not None:
+            quote["strikePrice"] = strike
 
     # DEBUG: keep only 1 tiny file
     with open(f"temp-quotes-{symbol_id}-{expiry}.json", "w") as f:
@@ -105,14 +111,53 @@ def get_last_price(symbol_id):
     response = requests.get(url, headers=get_headers())
     return response.json().get("quotes", [{}])[0].get("lastTradePrice", None)
 
+def get_strike_from_symbol(symbol):
+    """Extract strike price from option symbol (e.g., 'AAPL14Nov25C150.00' -> 150.00)"""
+    # Symbol format: TICKER + DATE + C/P + STRIKE
+    # Find 'C' or 'P' and extract everything after it
+    if 'C' in symbol:
+        parts = symbol.split('C')
+        if len(parts) >= 2:
+            try:
+                return float(parts[-1])
+            except (ValueError, IndexError):
+                return None
+    elif 'P' in symbol:
+        parts = symbol.split('P')
+        if len(parts) >= 2:
+            try:
+                return float(parts[-1])
+            except (ValueError, IndexError):
+                return None
+    return None
+
+def is_call_option(quote):
+    """Check if option is a call based on symbol name (e.g., 'AAPL14Nov25C150.00')"""
+    symbol = quote.get("symbol", "")
+    # Symbol format: TICKER + DATE + C/P + STRIKE
+    # Calls have 'C' after date, puts have 'P' after date
+    # Split by 'C' and check if 'P' appears before it (if so, it's not a call)
+    if 'C' in symbol:
+        before_c = symbol.split('C')[0]
+        return 'P' not in before_c
+    return False
+
+def is_put_option(quote):
+    """Check if option is a put based on symbol name (e.g., 'AAPL14Nov25P150.00')"""
+    symbol = quote.get("symbol", "")
+    if 'P' in symbol:
+        before_p = symbol.split('P')[0]
+        return 'C' not in before_p
+    return False
+
 def score_straddle(quotes):
-    atm_calls = [q for q in quotes if q.get("optionRight") == "Call"]
-    atm_puts = [q for q in quotes if q.get("optionRight") == "Put"]
+    atm_calls = [q for q in quotes if is_call_option(q)]
+    atm_puts = [q for q in quotes if is_put_option(q)]
     if not atm_calls or not atm_puts:
         return None
 
-    mid_call = sorted(atm_calls, key=lambda x: abs(x["delta"] - 0.5))[0]
-    mid_put = sorted(atm_puts, key=lambda x: abs(x["delta"] + 0.5))[0]
+    mid_call = sorted(atm_calls, key=lambda x: abs(x.get("delta", 0) - 0.5))[0]
+    mid_put = sorted(atm_puts, key=lambda x: abs(x.get("delta", 0) + 0.5))[0]
 
     total_cost = mid_call.get("askPrice", 0) + mid_put.get("askPrice", 0)
     return mid_call, mid_put, total_cost
@@ -185,8 +230,9 @@ def process_strategy_file():
                     expiry = expiries[0]
 
                 quotes = get_option_quotes(symbol_id, expiry)
+                log(f"{symbol}: Retrieved {len(quotes)} quotes for expiry {expiry}")
                 if not quotes:
-                    log(f"{symbol}: No option quotes found.")
+                    log(f"{symbol}: No option quotes found for expiry {expiry}")
                     continue
 
                 if strategy == "straddle":
@@ -223,7 +269,15 @@ def process_strategy_file():
                         log(f"{symbol}: No valid straddle found.")
 
                 elif strategy == "long_call":
-                    call = min([q for q in quotes if q.get("optionRight") == "Call"], key=lambda x: abs(x["delta"] - 0.5), default=None)
+                    calls = [q for q in quotes if is_call_option(q)]
+                    log(f"{symbol}: Found {len(calls)} call options, {len(quotes)} total quotes")
+                    if len(calls) == 0 and len(quotes) > 0:
+                        # Debug: show sample symbols to understand format
+                        sample_symbols = [q.get("symbol", "?") for q in quotes[:3]]
+                        log(f"{symbol}: Sample symbols: {sample_symbols}")
+                    if calls:
+                        log(f"{symbol}: Call deltas: {[round(c.get('delta', 0), 2) for c in calls[:5]]}")
+                    call = min(calls, key=lambda x: abs(x.get("delta", 0) - 0.5), default=None) if calls else None
                     if call:
                         underlying_price = get_last_price(symbol_id)
                         log(f"{symbol} {expiry}: LONG CALL - Buy {call['strikePrice']}C @{call['askPrice']}")
@@ -253,7 +307,7 @@ def process_strategy_file():
                         log(f"{symbol}: No suitable call found.")
 
                 elif strategy == "long_put":
-                    put = min([q for q in quotes if q.get("optionRight") == "Put"], key=lambda x: abs(x["delta"] + 0.5), default=None)
+                    put = min([q for q in quotes if is_put_option(q)], key=lambda x: abs(x.get("delta", 0) + 0.5), default=None)
                     if put:
                         underlying_price = get_last_price(symbol_id)
                         log(f"{symbol} {expiry}: LONG PUT - Buy {put['strikePrice']}P @{put['askPrice']}")
@@ -283,12 +337,12 @@ def process_strategy_file():
                         log(f"{symbol}: No suitable put found.")
 
                 elif strategy == "bull_call_spread":
-                    atm_call = min([q for q in quotes if q.get("optionRight") == "Call"], key=lambda x: abs(x["delta"] - 0.5), default=None)
+                    atm_call = min([q for q in quotes if is_call_option(q)], key=lambda x: abs(x.get("delta", 0) - 0.5), default=None)
                     if not atm_call:
                         log(f"{symbol}: No ATM call for bull call spread.")
                         continue
 
-                    otm_calls = [q for q in quotes if q.get("optionRight") == "Call" and q["strikePrice"] > atm_call["strikePrice"]]
+                    otm_calls = [q for q in quotes if is_call_option(q) and q["strikePrice"] > atm_call["strikePrice"]]
                     otm_call = min(otm_calls, key=lambda x: abs(x["strikePrice"] - (atm_call["strikePrice"] + config.SPREAD_STRIKE_WIDTH)), default=None)
 
                     if otm_call:
@@ -318,12 +372,12 @@ def process_strategy_file():
                         log(f"{symbol}: No suitable OTM call for spread.")
 
                 elif strategy == "bear_put_spread":
-                    atm_put = min([q for q in quotes if q.get("optionRight") == "Put"], key=lambda x: abs(x["delta"] + 0.5), default=None)
+                    atm_put = min([q for q in quotes if is_put_option(q)], key=lambda x: abs(x.get("delta", 0) + 0.5), default=None)
                     if not atm_put:
                         log(f"{symbol}: No ATM put for bear put spread.")
                         continue
 
-                    otm_puts = [q for q in quotes if q.get("optionRight") == "Put" and q["strikePrice"] < atm_put["strikePrice"]]
+                    otm_puts = [q for q in quotes if is_put_option(q) and q["strikePrice"] < atm_put["strikePrice"]]
                     otm_put = min(otm_puts, key=lambda x: abs(x["strikePrice"] - (atm_put["strikePrice"] - config.SPREAD_STRIKE_WIDTH)), default=None)
 
                     if otm_put:
@@ -354,11 +408,11 @@ def process_strategy_file():
                         log(f"{symbol}: No suitable OTM put for spread.")
                 
                 elif strategy == "iron_condor":
-                    puts = sorted([q for q in quotes if q.get("optionRight") == "Put"], key=lambda x: x["strikePrice"])
-                    calls = sorted([q for q in quotes if q.get("optionRight") == "Call"], key=lambda x: x["strikePrice"])
+                    puts = sorted([q for q in quotes if is_put_option(q)], key=lambda x: x["strikePrice"])
+                    calls = sorted([q for q in quotes if is_call_option(q)], key=lambda x: x["strikePrice"])
 
-                    short_put = min(puts, key=lambda x: abs(x["delta"] + config.DELTA_SHORT_LEG), default=None)
-                    short_call = min(calls, key=lambda x: abs(x["delta"] - config.DELTA_SHORT_LEG), default=None)
+                    short_put = min(puts, key=lambda x: abs(x.get("delta", 0) + config.DELTA_SHORT_LEG), default=None)
+                    short_call = min(calls, key=lambda x: abs(x.get("delta", 0) - config.DELTA_SHORT_LEG), default=None)
 
                     if not short_put or not short_call:
                         log(f"{symbol}: Could not find short legs for iron condor.")
@@ -410,10 +464,10 @@ def process_strategy_file():
                    
                 elif strategy == "call_ratio_backspread":
                     # Typically 1 short ATM call, 2 long OTM calls
-                    calls = sorted([q for q in quotes if q.get("optionRight") == "Call"], key=lambda x: x["strikePrice"])
+                    calls = sorted([q for q in quotes if is_call_option(q)], key=lambda x: x["strikePrice"])
 
                     # Find ATM call for short leg
-                    short_call = min(calls, key=lambda x: abs(x["delta"] - config.DELTA_ATM), default=None)
+                    short_call = min(calls, key=lambda x: abs(x.get("delta", 0) - config.DELTA_ATM), default=None)
                     if not short_call:
                         log(f"{symbol}: No ATM call for call ratio backspread.")
                         continue
@@ -459,10 +513,10 @@ def process_strategy_file():
 
                 elif strategy == "put_ratio_backspread":
                     # Typically 1 short ATM put, 2 long OTM puts
-                    puts = sorted([q for q in quotes if q.get("optionRight") == "Put"], key=lambda x: x["strikePrice"], reverse=True)
+                    puts = sorted([q for q in quotes if is_put_option(q)], key=lambda x: x["strikePrice"], reverse=True)
 
                     # Find ATM put for short leg
-                    short_put = min(puts, key=lambda x: abs(x["delta"] + config.DELTA_ATM), default=None)
+                    short_put = min(puts, key=lambda x: abs(x.get("delta", 0) + config.DELTA_ATM), default=None)
                     if not short_put:
                         log(f"{symbol}: No ATM put for put ratio backspread.")
                         continue
@@ -527,8 +581,8 @@ def process_strategy_file():
 
                     # Find ATM strike - use calls by default
                     underlying_price = get_last_price(symbol_id)
-                    front_calls = [q for q in front_quotes if q.get("optionRight") == "Call"]
-                    back_calls = [q for q in back_quotes if q.get("optionRight") == "Call"]
+                    front_calls = [q for q in front_quotes if is_call_option(q)]
+                    back_calls = [q for q in back_quotes if is_call_option(q)]
 
                     if not front_calls or not back_calls:
                         log(f"{symbol}: No calls found for calendar spread.")
