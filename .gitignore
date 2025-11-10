@@ -13,3 +13,9 @@ execution_log_*.csv
 
 # Log files
 *.log
+
+# PyInstaller build artifacts
+build/
+dist/
+*.spec.bak
+*.exe

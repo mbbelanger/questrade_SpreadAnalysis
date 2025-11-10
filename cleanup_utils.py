@@ -47,11 +47,11 @@ def cleanup_temp_files(max_age_hours=24, dry_run=False):
                     deleted_count += 1
 
             except Exception as e:
-                log(f"⚠️ Error processing {filepath}: {e}")
+                log(f"[WARNING] Error processing {filepath}: {e}")
 
     if deleted_count > 0:
         action = "Would delete" if dry_run else "Deleted"
-        log(f"✅ {action} {deleted_count} temp file(s), freed {total_size:,} bytes")
+        log(f"[OK] {action} {deleted_count} temp file(s), freed {total_size:,} bytes")
     else:
         log(f"No temp files older than {max_age_hours} hours found")
 
@@ -92,11 +92,11 @@ def cleanup_all_temp_files(dry_run=False):
                 deleted_count += 1
 
             except Exception as e:
-                log(f"⚠️ Error processing {filepath}: {e}")
+                log(f"[WARNING] Error processing {filepath}: {e}")
 
     if deleted_count > 0:
         action = "Would delete" if dry_run else "Deleted"
-        log(f"✅ {action} {deleted_count} temp file(s), freed {total_size:,} bytes")
+        log(f"[OK] {action} {deleted_count} temp file(s), freed {total_size:,} bytes")
     else:
         log("No temp files found")
 
@@ -128,7 +128,7 @@ def list_temp_files():
                 files_info.append((filepath, file_size, age_hours))
 
             except Exception as e:
-                log(f"⚠️ Error reading {filepath}: {e}")
+                log(f"[WARNING] Error reading {filepath}: {e}")
 
     # Sort by age (newest first)
     files_info.sort(key=lambda x: x[2])

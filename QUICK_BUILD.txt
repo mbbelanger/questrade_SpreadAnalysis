@@ -1,0 +1,69 @@
+===============================================================================
+QUESTRADE TRADING SYSTEM - WINDOWS EXECUTABLE QUICK BUILD GUIDE
+===============================================================================
+
+FASTEST WAY TO BUILD:
+---------------------
+1. Double-click: build_exe.bat
+2. Wait for build to complete
+3. Get QuestradeTrading.exe in this folder
+
+WHAT YOU NEED TO RUN THE EXE:
+------------------------------
+Put these files in the same folder as QuestradeTrading.exe:
+
+1. .env (with your Questrade refresh token)
+   QUESTRADE_REFRESH_TOKEN=your_token_here
+
+2. watchlist.txt (your tickers)
+   QQQ
+   SPY
+   AAPL
+
+MANUAL BUILD (if batch file doesn't work):
+-------------------------------------------
+1. pip install pyinstaller
+2. pyinstaller --clean questrade_trading.spec
+3. Executable will be in dist\QuestradeTrading.exe
+
+FIRST TIME RUNNING:
+-------------------
+1. Create a folder (e.g., C:\Trading\)
+2. Copy QuestradeTrading.exe to that folder
+3. Create .env file with your token
+4. Create watchlist.txt with your tickers
+5. Double-click QuestradeTrading.exe
+
+MENU OPTIONS:
+-------------
+1. Strategy Selector - Find trading opportunities
+2. Trade Generator - Generate trade recommendations
+3. Position Tracker - View positions and P&L
+4. Trade Executor - Execute trades
+5. Cleanup - Clean temp files
+6. Run Tests - Test the system
+
+OUTPUT FILES (created automatically):
+--------------------------------------
+- trade_recommendations.csv
+- portfolio_*.csv
+- execution_log_*.csv
+- strategy_debug.log
+- temp-*.json
+
+TROUBLESHOOTING:
+----------------
+Problem: "Module not found" error
+Solution: Edit questrade_trading.spec, add module to hiddenimports
+
+Problem: "Access token expired"
+Solution: Get new refresh token from https://login.questrade.com/APIAccess/
+
+Problem: Antivirus blocks the .exe
+Solution: Add exception or run from trusted folder (false positive)
+
+Problem: Build fails
+Solution: Check you have all dependencies installed (pip install -r requirements.txt)
+
+For detailed instructions, see: BUILD_INSTRUCTIONS.md
+===============================================================================
