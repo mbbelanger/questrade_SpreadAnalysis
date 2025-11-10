@@ -29,7 +29,7 @@ class OrderManager:
         """
         try:
             url = f"{self.api_server}v1/accounts/{account_id}/positions"
-            response = requests.get(url, headers=get_headers(), timeout=10)
+            response = requests.get(url, headers=get_headers(), timeout=30)
             data = response.json()
 
             if response.status_code != 200:
@@ -56,7 +56,7 @@ class OrderManager:
         """
         try:
             url = f"{self.api_server}v1/accounts/{account_id}/balances"
-            response = requests.get(url, headers=get_headers(), timeout=10)
+            response = requests.get(url, headers=get_headers(), timeout=30)
             data = response.json()
 
             if response.status_code != 200:
@@ -185,7 +185,7 @@ class OrderManager:
                 log(f"Order details: {json.dumps(order, indent=2)}")
                 return "DRY_RUN_ORDER_ID"
 
-            response = requests.post(url, headers=get_headers(), json=order, timeout=10)
+            response = requests.post(url, headers=get_headers(), json=order, timeout=30)
             data = response.json()
 
             if response.status_code == 200 or response.status_code == 201:
@@ -213,7 +213,7 @@ class OrderManager:
         """
         try:
             url = f"{self.api_server}v1/accounts/{account_id}/orders/{order_id}"
-            response = requests.get(url, headers=get_headers(), timeout=10)
+            response = requests.get(url, headers=get_headers(), timeout=30)
             data = response.json()
 
             if response.status_code != 200:

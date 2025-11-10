@@ -1,0 +1,2 @@
+timestamp,symbol,strategy,order_id,status,description
+2025-11-10 10:03:45,QQQ,bull_call_spread,DRY_RUN_20251110100345,SIMULATED,Buy 620.0C @1.8 / Sell 625.0C @0.16
