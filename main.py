@@ -18,10 +18,11 @@ def print_menu():
     print("-" * 70)
     print("1. Strategy Selector - Analyze watchlist and find trading opportunities")
     print("2. Trade Generator - Generate detailed trade recommendations")
-    print("3. Position Tracker - View current positions and P&L")
-    print("4. Trade Executor - Execute trades from recommendations")
-    print("5. Cleanup Utilities - Clean temp files and old data")
-    print("6. Run Tests - Execute unit test suite")
+    print("3. Trade Analyzer - Analyze past trade performance with current prices")
+    print("4. Position Tracker - View current positions and P&L")
+    print("5. Trade Executor - Execute trades from recommendations")
+    print("6. Cleanup Utilities - Clean temp files and old data")
+    print("7. Run Tests - Execute unit test suite")
     print()
     print("0. Exit")
     print("-" * 70)
@@ -39,6 +40,13 @@ def run_trade_generator():
     print("This will generate detailed trade recommendations.\n")
     import trade_generator
     trade_generator.main()
+
+def run_trade_analyzer():
+    """Run the trade analyzer"""
+    print("\n[Running Trade Analyzer...]")
+    print("This will analyze past trade recommendations with current market prices.\n")
+    import trade_analyzer
+    trade_analyzer.main()
 
 def run_position_tracker():
     """Run the position tracker"""
@@ -145,7 +153,7 @@ def main():
         print_menu()
 
         try:
-            choice = input("\nEnter your choice (0-6): ").strip()
+            choice = input("\nEnter your choice (0-7): ").strip()
 
             if choice == '0':
                 print("\nExiting... Goodbye!")
@@ -155,15 +163,17 @@ def main():
             elif choice == '2':
                 run_trade_generator()
             elif choice == '3':
-                run_position_tracker()
+                run_trade_analyzer()
             elif choice == '4':
-                run_trade_executor()
+                run_position_tracker()
             elif choice == '5':
-                run_cleanup()
+                run_trade_executor()
             elif choice == '6':
+                run_cleanup()
+            elif choice == '7':
                 run_tests()
             else:
-                print("\n[ERROR] Invalid choice. Please enter 0-6.")
+                print("\n[ERROR] Invalid choice. Please enter 0-7.")
 
             print("\n" + "=" * 70)
             input("\nPress Enter to return to main menu...")

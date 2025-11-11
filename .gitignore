@@ -8,6 +8,8 @@ temp-*.json
 
 # Trading data files (user-specific)
 trade_recommendations.csv
+trade_recommendations_*.csv
+trade_analysis_*.csv
 portfolio_*.csv
 execution_log_*.csv
 

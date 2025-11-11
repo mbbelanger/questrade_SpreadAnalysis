@@ -332,7 +332,7 @@ def get_primary_account():
     """
     try:
         url = f"{questrade_utils.API_SERVER}v1/accounts"
-        response = requests.get(url, headers=get_headers(), timeout=10)
+        response = requests.get(url, headers=get_headers(), timeout=30)
         data = response.json()
 
         if response.status_code != 200:

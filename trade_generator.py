@@ -26,90 +26,263 @@ from risk_analysis import (
 STRATEGY_FILE = config.STRATEGY_OUTPUT_FILE
 
 
-def get_expiries(symbol_id, retries=2):
+def get_expiries(symbol_id, retries=3):
+    """
+    Fetch option expiry dates with exponential backoff retry logic
+
+    Args:
+        symbol_id: Questrade symbol ID
+        retries: Number of retry attempts (default: 3)
+
+    Returns:
+        List of expiry date strings
+    """
     for attempt in range(retries):
-        url = f"{questrade_utils.API_SERVER}v1/symbols/{symbol_id}/options"
-        response = requests.get(url, headers=get_headers())
-        data = response.json()
+        try:
+            # Exponential backoff: 30s, 60s, 90s timeouts
+            timeout = 30 + (attempt * 30)
 
-        with open(f"temp-chain-{symbol_id}.json", "w") as f:
-            json.dump(data, f, indent=2)
+            url = f"{questrade_utils.API_SERVER}v1/symbols/{symbol_id}/options"
+            response = requests.get(url, headers=get_headers(), timeout=timeout)
 
-        option_chain = data.get("optionChain", [])
-        expiries = {
-            entry.get("expiryDate", "").split("T")[0]
-            for entry in option_chain
-            if "expiryDate" in entry
-        }
+            if response.status_code == 429:  # Rate limit
+                wait_time = 5 * (attempt + 1)  # 5s, 10s, 15s
+                log(f"[WARNING] Rate limited on {symbol_id}, waiting {wait_time}s before retry {attempt + 1}/{retries}")
+                sleep(wait_time)
+                continue
 
-        if expiries:
-            return sorted(expiries)
+            data = response.json()
 
-        log(f"[WARNING] No expiry dates in option chain for {symbol_id} on attempt {attempt + 1}")
-        sleep(1)
+            with open(f"temp-chain-{symbol_id}.json", "w") as f:
+                json.dump(data, f, indent=2)
 
+            option_chain = data.get("optionChain", [])
+            expiries = {
+                entry.get("expiryDate", "").split("T")[0]
+                for entry in option_chain
+                if "expiryDate" in entry
+            }
+
+            if expiries:
+                return sorted(expiries)
+
+            log(f"[WARNING] No expiry dates in option chain for {symbol_id} on attempt {attempt + 1}/{retries}")
+
+            if attempt < retries - 1:
+                wait_time = 2 * (attempt + 1)
+                log(f"[INFO] Waiting {wait_time}s before retry...")
+                sleep(wait_time)
+
+        except requests.exceptions.Timeout:
+            log(f"[WARNING] Timeout fetching expiries for {symbol_id} on attempt {attempt + 1}/{retries} (timeout={timeout}s)")
+            if attempt < retries - 1:
+                wait_time = 5 * (attempt + 1)
+                log(f"[INFO] Waiting {wait_time}s before retry...")
+                sleep(wait_time)
+        except Exception as e:
+            log(f"[WARNING] Error fetching expiries for {symbol_id} on attempt {attempt + 1}/{retries}: {e}")
+            if attempt < retries - 1:
+                sleep(2)
+
+    log(f"[ERROR] Failed to fetch expiries for {symbol_id} after {retries} attempts")
     return []
 
-def get_option_quotes(symbol_id: int, expiry: str, window: int = 5):
+def get_option_quotes(symbol_id: int, expiry: str, window: int = 5, retries: int = 3):
     """
-    Return quotes (incl. greeks) for ~±'window' strikes around ATM.
+    Return quotes (incl. greeks) for ~±'window' strikes around ATM with retry logic.
+
+    Args:
+        symbol_id: Questrade symbol ID
+        expiry: Expiry date string
+        window: Percentage window around ATM (default: 5%)
+        retries: Number of retry attempts (default: 3)
+
+    Returns:
+        List of option quote dictionaries
     """
-    # 1) full chain for the symbol
-    url = f"{questrade_utils.API_SERVER}v1/symbols/{symbol_id}/options"
-    chain = requests.get(url, headers=get_headers(), timeout=30).json()
+    for attempt in range(retries):
+        try:
+            timeout = 30 + (attempt * 30)  # 30s, 60s, 90s
 
-    # 2) underlying last price
-    last_px = get_last_price(symbol_id)
-    if last_px is None:
-        log(f"{symbol_id}: no last price");  return []
+            # 1) full chain for the symbol
+            url = f"{questrade_utils.API_SERVER}v1/symbols/{symbol_id}/options"
+            response = requests.get(url, headers=get_headers(), timeout=timeout)
 
-    # 3) collect IDs close to ATM
-    ids = []
-    chain_entry = next((c for c in chain.get("optionChain", [])
-                         if expiry in c.get("expiryDate", "")), None)
-    if not chain_entry:
-        log(f"{symbol_id}: expiry {expiry} not in chain");  return []
-
-    for root in chain_entry.get("chainPerRoot", []):
-        for strike in root.get("chainPerStrikePrice", []):
-            sp = strike.get("strikePrice")
-            if sp is None:    continue
-            if abs(sp - last_px) / last_px > window / 100:   # e.g. ±5 %
+            if response.status_code == 429:  # Rate limit
+                wait_time = 5 * (attempt + 1)
+                log(f"[WARNING] Rate limited fetching chain for {symbol_id}, waiting {wait_time}s")
+                sleep(wait_time)
                 continue
-            if strike.get("callSymbolId"): ids.append(str(strike["callSymbolId"]))
-            if strike.get("putSymbolId"):  ids.append(str(strike["putSymbolId"]))
 
-    ids = list(dict.fromkeys(ids))          # deduplicate
+            chain = response.json()
 
-    if not ids:
-        log(f"{symbol_id}: no near-ATM option IDs");  return []
+            # 2) underlying last price
+            last_px = get_last_price(symbol_id, retries=retries)
+            if last_px is None:
+                log(f"{symbol_id}: no last price");  return []
 
-    # 4) fetch quotes in chunks, request greeks
-    all_quotes = []
-    for id_chunk in chunk(ids, 80):
-        # Use correct POST endpoint for option quotes with Greeks
-        qurl = f"{questrade_utils.API_SERVER}v1/markets/quotes/options"
-        payload = {"optionIds": [int(id) for id in id_chunk]}
-        qdata = requests.post(qurl, json=payload, headers=get_headers(), timeout=30).json()
-        all_quotes.extend(qdata.get("optionQuotes", []))
+            # 3) collect IDs close to ATM
+            ids = []
+            chain_entry = next((c for c in chain.get("optionChain", [])
+                                 if expiry in c.get("expiryDate", "")), None)
+            if not chain_entry:
+                log(f"{symbol_id}: expiry {expiry} not in chain");  return []
 
-    # 5) Add strikePrice field extracted from symbol name
-    for quote in all_quotes:
-        strike = get_strike_from_symbol(quote.get("symbol", ""))
-        if strike is not None:
-            quote["strikePrice"] = strike
+            for root in chain_entry.get("chainPerRoot", []):
+                for strike in root.get("chainPerStrikePrice", []):
+                    sp = strike.get("strikePrice")
+                    if sp is None:    continue
+                    if abs(sp - last_px) / last_px > window / 100:   # e.g. ±5 %
+                        continue
+                    if strike.get("callSymbolId"): ids.append(str(strike["callSymbolId"]))
+                    if strike.get("putSymbolId"):  ids.append(str(strike["putSymbolId"]))
 
-    # DEBUG: keep only 1 tiny file
-    with open(f"temp-quotes-{symbol_id}-{expiry}.json", "w") as f:
-        json.dump({"quotes": all_quotes[:20]}, f, indent=2)   # first 20 rows
+            ids = list(dict.fromkeys(ids))          # deduplicate
 
-    return all_quotes
+            if not ids:
+                log(f"{symbol_id}: no near-ATM option IDs");  return []
+
+            # 4) fetch quotes in chunks, request greeks
+            all_quotes = []
+            for id_chunk in chunk(ids, 80):
+                # Use correct POST endpoint for option quotes with Greeks
+                qurl = f"{questrade_utils.API_SERVER}v1/markets/quotes/options"
+                payload = {"optionIds": [int(id) for id in id_chunk]}
+
+                quote_response = requests.post(qurl, json=payload, headers=get_headers(), timeout=timeout)
+
+                if quote_response.status_code == 429:
+                    wait_time = 5 * (attempt + 1)
+                    log(f"[WARNING] Rate limited fetching quotes, waiting {wait_time}s")
+                    sleep(wait_time)
+                    continue
+
+                qdata = quote_response.json()
+                all_quotes.extend(qdata.get("optionQuotes", []))
+
+            # 5) Add strikePrice field extracted from symbol name
+            valid_quotes = []
+            for quote in all_quotes:
+                strike = get_strike_from_symbol(quote.get("symbol", ""))
+                if strike is not None:
+                    quote["strikePrice"] = strike
+                    valid_quotes.append(quote)
+                else:
+                    log(f"[WARNING] Could not parse strike from symbol: {quote.get('symbol', 'unknown')}")
+
+            # DEBUG: keep only 1 tiny file
+            with open(f"temp-quotes-{symbol_id}-{expiry}.json", "w") as f:
+                json.dump({"quotes": valid_quotes[:20]}, f, indent=2)   # first 20 rows
+
+            return valid_quotes
+
+        except requests.exceptions.Timeout:
+            log(f"[WARNING] Timeout fetching quotes for {symbol_id} on attempt {attempt + 1}/{retries} (timeout={timeout}s)")
+            if attempt < retries - 1:
+                wait_time = 5 * (attempt + 1)
+                log(f"[INFO] Waiting {wait_time}s before retry...")
+                sleep(wait_time)
+        except Exception as e:
+            log(f"[WARNING] Error fetching quotes for {symbol_id} on attempt {attempt + 1}/{retries}: {e}")
+            if attempt < retries - 1:
+                sleep(2)
+
+    log(f"[ERROR] Failed to fetch quotes for {symbol_id} after {retries} attempts")
+    return []
 
 
-def get_last_price(symbol_id):
-    url = f"{questrade_utils.API_SERVER}v1/markets/quotes?ids={symbol_id}"
-    response = requests.get(url, headers=get_headers())
-    return response.json().get("quotes", [{}])[0].get("lastTradePrice", None)
+def get_last_price(symbol_id, retries=3):
+    """
+    Fetch last trade price for a symbol with retry logic
+
+    Args:
+        symbol_id: Questrade symbol ID
+        retries: Number of retry attempts (default: 3)
+
+    Returns:
+        Last trade price or None if failed
+    """
+    for attempt in range(retries):
+        try:
+            timeout = 30 + (attempt * 30)  # 30s, 60s, 90s
+            url = f"{questrade_utils.API_SERVER}v1/markets/quotes?ids={symbol_id}"
+            response = requests.get(url, headers=get_headers(), timeout=timeout)
+
+            if response.status_code == 429:  # Rate limit
+                wait_time = 5 * (attempt + 1)
+                log(f"[WARNING] Rate limited fetching last price for {symbol_id}, waiting {wait_time}s")
+                sleep(wait_time)
+                continue
+
+            return response.json().get("quotes", [{}])[0].get("lastTradePrice", None)
+
+        except requests.exceptions.Timeout:
+            log(f"[WARNING] Timeout fetching last price for {symbol_id} on attempt {attempt + 1}/{retries}")
+            if attempt < retries - 1:
+                wait_time = 5 * (attempt + 1)
+                log(f"[INFO] Waiting {wait_time}s before retry...")
+                sleep(wait_time)
+        except Exception as e:
+            log(f"[WARNING] Error fetching last price for {symbol_id} on attempt {attempt + 1}/{retries}: {e}")
+            if attempt < retries - 1:
+                sleep(2)
+
+    log(f"[ERROR] Failed to fetch last price for {symbol_id} after {retries} attempts")
+    return None
+
+def categorize_expiries(expiries):
+    """
+    Categorize expiries into near-term, mid-term, and long-term buckets
+
+    Args:
+        expiries: List of expiry date strings (YYYY-MM-DD format)
+
+    Returns:
+        Dictionary with 'near', 'mid', 'long' keys containing expiry dates
+    """
+    from datetime import datetime
+
+    today = datetime.now().date()
+    result = {'near': None, 'mid': None, 'long': None}
+
+    if not expiries:
+        return result
+
+    expiry_dates = []
+    for exp_str in expiries:
+        try:
+            exp_date = datetime.strptime(exp_str, "%Y-%m-%d").date()
+            days_out = (exp_date - today).days
+            expiry_dates.append((exp_str, days_out))
+        except ValueError:
+            continue
+
+    if not expiry_dates:
+        return result
+
+    # Sort by days to expiry
+    expiry_dates.sort(key=lambda x: x[1])
+
+    # Near-term: closest expiry
+    result['near'] = expiry_dates[0][0]
+
+    # Mid-term: 14-60 days out (2 weeks to 2 months)
+    mid_candidates = [exp for exp, days in expiry_dates if 14 <= days <= 60]
+    if mid_candidates:
+        result['mid'] = mid_candidates[0]  # Take earliest in range
+    elif len(expiry_dates) > 1:
+        # Fallback: second available expiry if no mid-term range match
+        result['mid'] = expiry_dates[1][0]
+
+    # Long-term: 300-400 days out (~1 year, allowing some flexibility)
+    long_candidates = [exp for exp, days in expiry_dates if 300 <= days <= 400]
+    if long_candidates:
+        result['long'] = long_candidates[0]  # Take earliest in range
+    else:
+        # Fallback: longest available expiry
+        result['long'] = expiry_dates[-1][0]
+
+    return result
 
 def get_strike_from_symbol(symbol):
     """Extract strike price from option symbol (e.g., 'AAPL14Nov25C150.00' -> 150.00)"""
@@ -185,8 +358,101 @@ def calculate_iron_condor_limit_price(long_put, short_put, short_call, long_call
 def format_price(p):
     return f"{p:.2f}" if p is not None else "N/A"
 
+def process_bull_call_spread(symbol, symbol_id, expiry, expiry_label, writer):
+    """Process bull call spread for a specific expiry"""
+    quotes = get_option_quotes(symbol_id, expiry)
+    log(f"{symbol}: Retrieved {len(quotes)} quotes for {expiry_label} expiry {expiry}")
+
+    if not quotes:
+        log(f"{symbol}: No option quotes found for expiry {expiry}")
+        return False
+
+    atm_call = min([q for q in quotes if is_call_option(q)], key=lambda x: abs(x.get("delta", 0) - 0.5), default=None)
+    if not atm_call:
+        log(f"{symbol}: No ATM call for bull call spread.")
+        return False
+
+    otm_calls = [q for q in quotes if is_call_option(q) and q["strikePrice"] > atm_call["strikePrice"]]
+    otm_call = min(otm_calls, key=lambda x: abs(x["strikePrice"] - (atm_call["strikePrice"] + config.SPREAD_STRIKE_WIDTH)), default=None)
+
+    if otm_call:
+        log(f"{symbol} {expiry} ({expiry_label}): BULL CALL SPREAD - Buy {atm_call['strikePrice']}C @{atm_call['askPrice']} / Sell {otm_call['strikePrice']}C @{otm_call['bidPrice']}")
+
+        risk = calculate_bull_call_spread_risk(
+            atm_call['strikePrice'], otm_call['strikePrice'],
+            atm_call['askPrice'], otm_call['bidPrice']
+        )
+        log(format_risk_analysis(risk))
+
+        # Write to CSV
+        trade_desc = f"Buy {atm_call['strikePrice']}C @{atm_call['askPrice']} / Sell {otm_call['strikePrice']}C @{otm_call['bidPrice']}"
+        dte = calculate_days_to_expiry(expiry)
+        writer.writerow([
+            datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            symbol, f"bull_call_spread_{expiry_label}", expiry, dte,
+            trade_desc,
+            risk.get('max_loss', ''),
+            risk.get('max_profit', ''),
+            risk.get('breakeven', ''),
+            '', '',  # breakeven_lower, breakeven_upper (not applicable)
+            risk.get('risk_reward_ratio', ''),
+            risk.get('prob_profit', ''),
+            risk.get('net_debit', '')
+        ])
+        return True
+    else:
+        log(f"{symbol} ({expiry_label}): No suitable OTM call for spread.")
+        return False
+
+def process_bear_put_spread(symbol, symbol_id, expiry, expiry_label, writer):
+    """Process bear put spread for a specific expiry"""
+    quotes = get_option_quotes(symbol_id, expiry)
+    log(f"{symbol}: Retrieved {len(quotes)} quotes for {expiry_label} expiry {expiry}")
+
+    if not quotes:
+        log(f"{symbol}: No option quotes found for expiry {expiry}")
+        return False
+
+    atm_put = min([q for q in quotes if is_put_option(q)], key=lambda x: abs(x.get("delta", 0) + 0.5), default=None)
+    if not atm_put:
+        log(f"{symbol}: No ATM put for bear put spread.")
+        return False
+
+    otm_puts = [q for q in quotes if is_put_option(q) and q["strikePrice"] < atm_put["strikePrice"]]
+    otm_put = min(otm_puts, key=lambda x: abs(x["strikePrice"] - (atm_put["strikePrice"] - config.SPREAD_STRIKE_WIDTH)), default=None)
+
+    if otm_put:
+        log(f"{symbol} {expiry} ({expiry_label}): BEAR PUT SPREAD - Buy {atm_put['strikePrice']}P @{atm_put['askPrice']} / Sell {otm_put['strikePrice']}P @{otm_put['bidPrice']}")
+
+        risk = calculate_bear_put_spread_risk(
+            atm_put['strikePrice'], otm_put['strikePrice'],
+            atm_put['askPrice'], otm_put['bidPrice']
+        )
+        log(format_risk_analysis(risk))
+
+        # Write to CSV
+        trade_desc = f"Buy {atm_put['strikePrice']}P @{atm_put['askPrice']} / Sell {otm_put['strikePrice']}P @{otm_put['bidPrice']}"
+        dte = calculate_days_to_expiry(expiry)
+        writer.writerow([
+            datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            symbol, f"bear_put_spread_{expiry_label}", expiry, dte,
+            trade_desc,
+            risk.get('max_loss', ''),
+            risk.get('max_profit', ''),
+            risk.get('breakeven', ''),
+            '', '',
+            risk.get('risk_reward_ratio', ''),
+            risk.get('prob_profit', ''),
+            risk.get('net_debit', '')
+        ])
+        return True
+    else:
+        log(f"{symbol} ({expiry_label}): No suitable OTM put for spread.")
+        return False
+
 def process_strategy_file():
     import os
+    import shutil
 
     if not os.path.exists(STRATEGY_FILE):
         log(f"[ERROR] Strategy file '{STRATEGY_FILE}' not found!")
@@ -203,8 +469,26 @@ def process_strategy_file():
 
     log(f"Processing {len(rows)} strategy recommendation(s)")
 
-    # Open CSV file for writing trade recommendations
+    # Archive existing trade recommendations if they exist
     output_file = config.TRADE_OUTPUT_FILE
+    if os.path.exists(output_file):
+        # Get file modification time to determine the date of the old file
+        mod_time = os.path.getmtime(output_file)
+        file_date = datetime.fromtimestamp(mod_time).strftime('%Y-%m-%d')
+
+        # Create archived filename
+        archived_file = f"trade_recommendations_{file_date}.csv"
+
+        # If archived file already exists, append time to make it unique
+        if os.path.exists(archived_file):
+            file_datetime = datetime.fromtimestamp(mod_time).strftime('%Y-%m-%d_%H%M%S')
+            archived_file = f"trade_recommendations_{file_datetime}.csv"
+
+        # Move the old file to archived name
+        shutil.move(output_file, archived_file)
+        log(f"[INFO] Archived previous recommendations to: {archived_file}")
+
+    # Open CSV file for writing trade recommendations
     with open(output_file, 'w', newline='', encoding='utf-8') as csvout:
         writer = csv.writer(csvout)
         # Write header
@@ -220,14 +504,39 @@ def process_strategy_file():
             symbol_id = int(row['symbol_id'])
             strategy = row['strategy']
             try:
+                # Get all available expiries
                 expiries = get_expiries(symbol_id)
                 if not expiries:
                     today = datetime.now()
                     next_friday = today + timedelta((4 - today.weekday()) % 7)
                     expiry = next_friday.strftime("%Y-%m-%d")
                     log(f"{symbol}: No expiries found. Using fallback expiry {expiry}")
+                    categorized = {'near': expiry, 'mid': None, 'long': None}
                 else:
-                    expiry = expiries[0]
+                    # Categorize expiries into near/mid/long term
+                    categorized = categorize_expiries(expiries)
+                    log(f"{symbol}: Expiries - Near: {categorized['near']}, Mid: {categorized['mid']}, Long: {categorized['long']}")
+
+                # For spreads, process all three timeframes
+                if strategy == "bull_call_spread":
+                    for timeframe in ['near', 'mid', 'long']:
+                        expiry = categorized.get(timeframe)
+                        if expiry:
+                            process_bull_call_spread(symbol, symbol_id, expiry, timeframe, writer)
+                    continue
+
+                elif strategy == "bear_put_spread":
+                    for timeframe in ['near', 'mid', 'long']:
+                        expiry = categorized.get(timeframe)
+                        if expiry:
+                            process_bear_put_spread(symbol, symbol_id, expiry, timeframe, writer)
+                    continue
+
+                # For non-spread strategies, use near-term expiry only
+                expiry = categorized['near']
+                if not expiry:
+                    log(f"{symbol}: No near-term expiry available")
+                    continue
 
                 quotes = get_option_quotes(symbol_id, expiry)
                 log(f"{symbol}: Retrieved {len(quotes)} quotes for expiry {expiry}")
@@ -336,77 +645,8 @@ def process_strategy_file():
                     else:
                         log(f"{symbol}: No suitable put found.")
 
-                elif strategy == "bull_call_spread":
-                    atm_call = min([q for q in quotes if is_call_option(q)], key=lambda x: abs(x.get("delta", 0) - 0.5), default=None)
-                    if not atm_call:
-                        log(f"{symbol}: No ATM call for bull call spread.")
-                        continue
+                # Note: bull_call_spread and bear_put_spread are handled above with multi-timeframe logic
 
-                    otm_calls = [q for q in quotes if is_call_option(q) and q["strikePrice"] > atm_call["strikePrice"]]
-                    otm_call = min(otm_calls, key=lambda x: abs(x["strikePrice"] - (atm_call["strikePrice"] + config.SPREAD_STRIKE_WIDTH)), default=None)
-
-                    if otm_call:
-                        log(f"{symbol} {expiry}: BULL CALL SPREAD - Buy {atm_call['strikePrice']}C @{atm_call['askPrice']} / Sell {otm_call['strikePrice']}C @{otm_call['bidPrice']}")
-
-                        risk = calculate_bull_call_spread_risk(
-                            atm_call['strikePrice'], otm_call['strikePrice'],
-                            atm_call['askPrice'], otm_call['bidPrice']
-                        )
-                        log(format_risk_analysis(risk))
-                        # Write to CSV
-                        trade_desc = f"Buy {atm_call['strikePrice']}C @{atm_call['askPrice']} / Sell {otm_call['strikePrice']}C @{otm_call['bidPrice']}"
-                        dte = calculate_days_to_expiry(expiry)
-                        writer.writerow([
-                            datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                            symbol, strategy, expiry, dte,
-                            trade_desc,
-                            risk.get('max_loss', ''),
-                            risk.get('max_profit', ''),
-                            risk.get('breakeven', ''),
-                            '', '',  # breakeven_lower, breakeven_upper (not applicable)
-                            risk.get('risk_reward_ratio', ''),
-                            risk.get('prob_profit', ''),
-                            risk.get('net_debit', '')
-                        ])
-                    else:
-                        log(f"{symbol}: No suitable OTM call for spread.")
-
-                elif strategy == "bear_put_spread":
-                    atm_put = min([q for q in quotes if is_put_option(q)], key=lambda x: abs(x.get("delta", 0) + 0.5), default=None)
-                    if not atm_put:
-                        log(f"{symbol}: No ATM put for bear put spread.")
-                        continue
-
-                    otm_puts = [q for q in quotes if is_put_option(q) and q["strikePrice"] < atm_put["strikePrice"]]
-                    otm_put = min(otm_puts, key=lambda x: abs(x["strikePrice"] - (atm_put["strikePrice"] - config.SPREAD_STRIKE_WIDTH)), default=None)
-
-                    if otm_put:
-                        log(f"{symbol} {expiry}: BEAR PUT SPREAD - Buy {atm_put['strikePrice']}P @{atm_put['askPrice']} / Sell {otm_put['strikePrice']}P @{otm_put['bidPrice']}")
-
-                        risk = calculate_bear_put_spread_risk(
-                            atm_put['strikePrice'], otm_put['strikePrice'],
-                            atm_put['askPrice'], otm_put['bidPrice']
-                        )
-                        log(format_risk_analysis(risk))
-
-                        # Write to CSV
-                        trade_desc = f"Buy {atm_put['strikePrice']}P @{atm_put['askPrice']} / Sell {otm_put['strikePrice']}P @{otm_put['bidPrice']}"
-                        dte = calculate_days_to_expiry(expiry)
-                        writer.writerow([
-                            datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                            symbol, strategy, expiry, dte,
-                            trade_desc,
-                            risk.get('max_loss', ''),
-                            risk.get('max_profit', ''),
-                            risk.get('breakeven', ''),
-                            '', '',
-                            risk.get('risk_reward_ratio', ''),
-                            risk.get('prob_profit', ''),
-                            risk.get('net_debit', '')
-                        ])
-                    else:
-                        log(f"{symbol}: No suitable OTM put for spread.")
-                
                 elif strategy == "iron_condor":
                     puts = sorted([q for q in quotes if is_put_option(q)], key=lambda x: x["strikePrice"])
                     calls = sorted([q for q in quotes if is_call_option(q)], key=lambda x: x["strikePrice"])
